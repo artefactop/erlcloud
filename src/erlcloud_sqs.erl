@@ -34,7 +34,8 @@
 				  receive_message_wait_time_seconds).
 -type(sqs_queue_attribute_name() :: all | approximate_number_of_messages |
                                     approximate_number_of_messages_not_visible | visibility_timeout |
-                                    created_timestamp | last_modified_timestamp | policy).
+                                    created_timestamp | last_modified_timestamp | policy |
+                                    queue_arn).
 
 
 
@@ -271,8 +272,14 @@ receive_message(QueueName, AttributeNames, MaxNumberOfMessages,
        VisibilityTimeout =:= none,
        (WaitTimeSeconds >= 0 andalso WaitTimeSeconds =< 20) orelse
        WaitTimeSeconds =:= none ->
-    TotalTimeout = if (WaitTimeSeconds =/= none andalso WaitTimeSeconds >= 0) -> Config#aws_config.timeout + (WaitTimeSeconds * 1000) ;
-       true -> Config#aws_config.timeout
+    InitialTimeout = case Config#aws_config.timeout of
+        undefined -> ?DEFAULT_TIMEOUT;
+        _ -> Config#aws_config.timeout
+    end,
+    TotalTimeout = if
+       (WaitTimeSeconds =/= none andalso WaitTimeSeconds >= 0 andalso InitialTimeout =/= infinity) ->
+           InitialTimeout + (WaitTimeSeconds * 1000) ;
+       true -> InitialTimeout
     end,
     Doc = sqs_xml_request(Config#aws_config{timeout=TotalTimeout}, QueueName, "ReceiveMessage",
                           [
@@ -381,14 +388,30 @@ sqs_simple_request(Config, QueueName, Action, Params) ->
     ok.
 
 sqs_xml_request(Config, QueueName, Action, Params) ->
-    erlcloud_aws:aws_request_xml(post, Config#aws_config.sqs_protocol,
-                                 Config#aws_config.sqs_host, Config#aws_config.sqs_port,
-                                 queue_path(QueueName), [{"Action", Action}, {"Version", ?API_VERSION}|Params], Config).
+    case erlcloud_aws:aws_request_xml4(post, Config#aws_config.sqs_protocol,
+                                  Config#aws_config.sqs_host, Config#aws_config.sqs_port,
+                                  queue_path(QueueName),
+                                  [{"Action", Action}, {"Version", ?API_VERSION}|Params],
+                                  "sqs",Config)
+    of
+        {ok, Body} ->
+            Body;
+        {error, Reason} ->
+            erlang:error({aws_error, Reason})
+    end.
 
 sqs_request(Config, QueueName, Action, Params) ->
-    erlcloud_aws:aws_request(post, Config#aws_config.sqs_protocol,
-                                 Config#aws_config.sqs_host, Config#aws_config.sqs_port,
-                             queue_path(QueueName), [{"Action", Action}, {"Version", ?API_VERSION}|Params], Config).
+    case erlcloud_aws:aws_request4(post, Config#aws_config.sqs_protocol,
+                              Config#aws_config.sqs_host, Config#aws_config.sqs_port,
+                              queue_path(QueueName),
+                              [{"Action", Action}, {"Version", ?API_VERSION}|Params],
+                              "sqs", Config)
+    of
+        {ok, Body} ->
+            Body;
+        {error, Reason} ->
+            erlang:error({aws_error, Reason})
+    end.
 
 queue_path([$/|_] = QueueName) -> QueueName;
 queue_path([$h,$t,$t,$p|_] = URL) ->

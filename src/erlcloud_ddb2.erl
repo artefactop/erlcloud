@@ -27,7 +27,7 @@
 %% `42'. To specify the AWS binary or set types an explicit `Type'
 %% must be provided. For example: `{b, <<1,2,3>>}' or `{ns,
 %% [4,5,6]}'. Note that binary values will be base64 encoded and
-%% decoded automatically. Since some atoms (such as `false', `not_null',
+%% decoded automatically. Since some atoms (such as `true', `false', `not_null',
 %% `null', `undefined', `delete', etc) have special meanings in some cases,
 %% use them carefully.
 %%
@@ -68,7 +68,7 @@
 %% to handle conditional check failures, match `{error,
 %% {<<"ConditionalCheckFailedException">>, _}}'.
 %%
-%% `erlcloud_ddb_impl' provides a higher level API that implements common
+%% `erlcloud_ddb_util' provides a higher level API that implements common
 %% operations that may require multiple DynamoDB API calls.
 %%
 %% See the unit tests for additional usage examples beyond what are
@@ -83,7 +83,8 @@
 -include("erlcloud_ddb2.hrl").
 
 %%% Library initialization.
--export([configure/2, configure/3, new/2, new/3]).
+-export([configure/2, configure/3, configure/4, configure/5,
+         new/2, new/3, new/4, new/5]).
 
 %%% DynamoDB API
 -export([batch_get_item/1, batch_get_item/2, batch_get_item/3,
@@ -91,6 +92,7 @@
          create_table/5, create_table/6, create_table/7,
          delete_item/2, delete_item/3, delete_item/4,
          delete_table/1, delete_table/2, delete_table/3,
+         describe_limits/0, describe_limits/1, describe_limits/2,
          describe_table/1, describe_table/2, describe_table/3,
          get_item/2, get_item/3, get_item/4,
          list_tables/0, list_tables/1, list_tables/2,
@@ -99,7 +101,7 @@
          q/2, q/3, q/4,
          scan/1, scan/2, scan/3,
          update_item/3, update_item/4, update_item/5,
-         update_table/3, update_table/4, update_table/5
+         update_table/2, update_table/3, update_table/4, update_table/5
         ]).
 
 -export_type(
@@ -144,6 +146,7 @@
     get_item_opt/0,
     get_item_opts/0,
     get_item_return/0,
+    global_secondary_index_def/0,
     global_secondary_index_update/0,
     global_secondary_index_updates/0,
     in_attr/0,
@@ -160,7 +163,6 @@
     list_tables_opts/0,
     list_tables_return/0,
     local_secondary_index_def/0,
-    global_secondary_index_def/0,
     maybe_list/1,
     ok_return/1,
     out_attr/0,
@@ -176,6 +178,7 @@
     q_opts/0,
     q_return/0,
     range_key_name/0,
+    read_units/0,
     return_consumed_capacity/0,
     return_consumed_capacity_opt/0,
     return_item_collection_metrics/0,
@@ -184,13 +187,15 @@
     scan_opt/0,
     scan_opts/0,
     scan_return/0,
+    stream_specification/0,
     select/0,
     table_name/0,
     update_action/0,
     update_item_opt/0,
     update_item_opts/0,
     update_item_return/0,
-    update_table_return/0
+    update_table_return/0,
+    write_units/0
    ]).
 
 %%%------------------------------------------------------------------------------
@@ -208,6 +213,21 @@ new(AccessKeyID, SecretAccessKey, Host) ->
                 secret_access_key=SecretAccessKey,
                 ddb_host=Host}.
 
+-spec(new/4 :: (string(), string(), string(), non_neg_integer()) -> aws_config()).
+new(AccessKeyID, SecretAccessKey, Host, Port) ->
+    #aws_config{access_key_id=AccessKeyID,
+                secret_access_key=SecretAccessKey,
+                ddb_host=Host,
+                ddb_port=Port}.
+
+-spec(new/5 :: (string(), string(), string(), non_neg_integer(), string()) -> aws_config()).
+new(AccessKeyID, SecretAccessKey, Host, Port, Scheme) ->
+    #aws_config{access_key_id=AccessKeyID,
+                secret_access_key=SecretAccessKey,
+                ddb_host=Host,
+                ddb_port=Port,
+                ddb_scheme=Scheme}.
+
 -spec(configure/2 :: (string(), string()) -> ok).
 configure(AccessKeyID, SecretAccessKey) ->
     put(aws_config, new(AccessKeyID, SecretAccessKey)),
@@ -216,6 +236,16 @@ configure(AccessKeyID, SecretAccessKey) ->
 -spec(configure/3 :: (string(), string(), string()) -> ok).
 configure(AccessKeyID, SecretAccessKey, Host) ->
     put(aws_config, new(AccessKeyID, SecretAccessKey, Host)),
+    ok.
+
+-spec(configure/4 :: (string(), string(), string(), non_neg_integer()) -> ok).
+configure(AccessKeyID, SecretAccessKey, Host, Port) ->
+    put(aws_config, new(AccessKeyID, SecretAccessKey, Host, Port)),
+    ok.
+
+-spec(configure/5 :: (string(), string(), string(), non_neg_integer(), string()) -> ok).
+configure(AccessKeyID, SecretAccessKey, Host, Port, Scheme) ->
+    put(aws_config, new(AccessKeyID, SecretAccessKey, Host, Port, Scheme)),
     ok.
 
 default_config() -> erlcloud_aws:default_config().
@@ -245,7 +275,9 @@ default_config() -> erlcloud_aws:default_config().
                          {l, [in_attr_value()]} |
                          {m, [in_attr()]}.
 -type in_attr() :: {attr_name(), in_attr_value()}.
--type in_expected_item() :: {attr_name(), false} | condition().
+-type in_expected_item() :: {attr_name(), false} |
+                            {attr_name(), true, in_attr_value()} |
+                            condition().
 -type in_expected() :: maybe_list(in_expected_item()).
 -type in_item() :: [in_attr()].
 
@@ -273,6 +305,9 @@ default_config() -> erlcloud_aws:default_config().
 
 -type global_secondary_index_def() :: {index_name(), key_schema(), projection(), read_units(), write_units()}.
 
+-type stream_view_type() :: keys_only | new_image | old_image | new_and_old_images.
+-type stream_specification() :: false | {true, stream_view_type()}.
+
 -type return_value() :: none | all_old | updated_old | all_new | updated_new.
 
 -type expression() :: binary().
@@ -296,7 +331,8 @@ default_config() -> erlcloud_aws:default_config().
 -type return_consumed_capacity() :: none | total | indexes.
 -type return_item_collection_metrics() :: none | size.
 
--type out_attr_value() :: binary() | number() | boolean() | undefined | [binary()] | [number()] | [out_attr_value()] | [out_attr()].
+-type out_attr_value() :: binary() | number() | boolean() | undefined |
+                          [binary()] | [number()] | [out_attr_value()] | [out_attr()].
 -type out_attr() :: {attr_name(), out_attr_value()}.
 -type out_item() :: [out_attr() | in_attr()]. % in_attr in the case of typed_record
 -type ok_return(T) :: {ok, T} | {error, term()}.
@@ -407,15 +443,30 @@ dynamize_projection({include, AttrNames}) ->
     [{<<"ProjectionType">>, <<"INCLUDE">>},
      {<<"NonKeyAttributes">>, AttrNames}].
 
+-spec dynamize_provisioned_throughput({read_units(), write_units()}) -> jsx:json_term().
+dynamize_provisioned_throughput({ReadUnits, WriteUnits}) ->
+     [{<<"ReadCapacityUnits">>, ReadUnits},
+      {<<"WriteCapacityUnits">>, WriteUnits}].
+
 -spec dynamize_global_secondary_index(global_secondary_index_def()) -> jsx:json_term().
 dynamize_global_secondary_index({IndexName, KeySchema, Projection, ReadUnits, WriteUnits}) ->
     [{<<"IndexName">>, IndexName},
      {<<"KeySchema">>, dynamize_key_schema(KeySchema)},
      {<<"Projection">>, dynamize_projection(Projection)},
-     {<<"ProvisionedThroughput">>, [
-         {<<"ReadCapacityUnits">>, ReadUnits},
-         {<<"WriteCapacityUnits">>, WriteUnits}
-     ]}].
+     {<<"ProvisionedThroughput">>, dynamize_provisioned_throughput({ReadUnits, WriteUnits})}].
+
+-spec dynamize_stream_view_type(stream_view_type()) -> binary().
+dynamize_stream_view_type(keys_only) -> <<"KEYS_ONLY">>;
+dynamize_stream_view_type(new_image) -> <<"NEW_IMAGE">>;
+dynamize_stream_view_type(old_image) -> <<"OLD_IMAGE">>;
+dynamize_stream_view_type(new_and_old_images) -> <<"NEW_AND_OLD_IMAGES">>.
+
+-spec dynamize_stream_specification(stream_specification()) -> jsx:json_term().
+dynamize_stream_specification(false) ->
+    [{<<"StreamEnabled">>, false}];
+dynamize_stream_specification({true, StreamViewType}) ->
+    [{<<"StreamEnabled">>, true},
+     {<<"StreamViewType">>, dynamize_stream_view_type(StreamViewType)}].
 
 -spec dynamize_conditional_op(conditional_op()) -> binary().
 dynamize_conditional_op('and') ->
@@ -426,6 +477,9 @@ dynamize_conditional_op('or') ->
 -spec dynamize_expected_item(in_expected_item()) -> json_pair().
 dynamize_expected_item({Name, false}) ->
     {Name, [{<<"Exists">>, false}]};
+dynamize_expected_item({Name, true, Value}) ->
+    {Name, [{<<"Exists">>, true},
+            {<<"Value">>, [dynamize_value(Value)]}]};
 dynamize_expected_item(Condition) ->
     dynamize_condition(Condition).
 
@@ -661,6 +715,21 @@ undynamize_key_schema([Key1, Key2], _) ->
             {key_name(Key1), key_name(Key2)};
         <<"RANGE">> ->
             {key_name(Key2), key_name(Key1)}
+    end.
+
+-spec undynamize_stream_view_type(binary(), undynamize_opts()) -> stream_view_type().
+undynamize_stream_view_type(<<"KEYS_ONLY">>, _) -> keys_only;
+undynamize_stream_view_type(<<"NEW_IMAGE">>, _) -> new_image;
+undynamize_stream_view_type(<<"OLD_IMAGE">>, _) -> old_image;
+undynamize_stream_view_type(<<"NEW_AND_OLD_IMAGES">>, _) -> new_and_old_images.
+
+-spec undynamize_stream_specification(jsx:json_term(), undynamize_opts()) -> stream_specification().
+undynamize_stream_specification(Json, Opts) ->
+    case proplists:get_value(<<"StreamEnabled">>, Json, false) of
+        false ->
+            false;
+        true ->
+            {true, undynamize_stream_view_type(proplists:get_value(<<"StreamViewType">>, Json), Opts)}
     end.
 
 -spec undynamize_expression(binary(), undynamize_opts()) -> expression().
@@ -924,6 +993,7 @@ undynamize_index_status(<<"ACTIVE">>, _)   -> active.
 global_secondary_index_description_record() ->
     {#ddb2_global_secondary_index_description{},
      [{<<"Backfilling">>, #ddb2_global_secondary_index_description.backfilling, fun id/2},
+      {<<"IndexArn">>, #ddb2_global_secondary_index_description.index_arn, fun id/2},
       {<<"IndexName">>, #ddb2_global_secondary_index_description.index_name, fun id/2},
       {<<"IndexSizeBytes">>, #ddb2_global_secondary_index_description.index_size_bytes, fun id/2},
       {<<"IndexStatus">>, #ddb2_global_secondary_index_description.index_status, fun undynamize_index_status/2},
@@ -937,7 +1007,8 @@ global_secondary_index_description_record() ->
 -spec local_secondary_index_description_record() -> record_desc().
 local_secondary_index_description_record() ->
     {#ddb2_local_secondary_index_description{},
-     [{<<"IndexName">>, #ddb2_local_secondary_index_description.index_name, fun id/2},
+     [{<<"IndexArn">>, #ddb2_local_secondary_index_description.index_arn, fun id/2},
+      {<<"IndexName">>, #ddb2_local_secondary_index_description.index_name, fun id/2},
       {<<"IndexSizeBytes">>, #ddb2_local_secondary_index_description.index_size_bytes, fun id/2},
       {<<"ItemCount">>, #ddb2_local_secondary_index_description.item_count, fun id/2},
       {<<"KeySchema">>, #ddb2_local_secondary_index_description.key_schema, fun undynamize_key_schema/2},
@@ -963,10 +1034,14 @@ table_description_record() ->
        fun(V, Opts) -> [undynamize_record(global_secondary_index_description_record(), I, Opts) || I <- V] end},
       {<<"ItemCount">>, #ddb2_table_description.item_count, fun id/2},
       {<<"KeySchema">>, #ddb2_table_description.key_schema, fun undynamize_key_schema/2},
+      {<<"LatestStreamArn">>, #ddb2_table_description.latest_stream_arn, fun id/2},
+      {<<"LatestStreamLabel">>, #ddb2_table_description.latest_stream_label, fun id/2},
       {<<"LocalSecondaryIndexes">>, #ddb2_table_description.local_secondary_indexes,
        fun(V, Opts) -> [undynamize_record(local_secondary_index_description_record(), I, Opts) || I <- V] end},
       {<<"ProvisionedThroughput">>, #ddb2_table_description.provisioned_throughput,
        fun(V, Opts) -> undynamize_record(provisioned_throughput_description_record(), V, Opts) end},
+      {<<"StreamSpecification">>, #ddb2_table_description.stream_specification, fun undynamize_stream_specification/2},
+      {<<"TableArn">>, #ddb2_table_description.table_arn, fun id/2},
       {<<"TableName">>, #ddb2_table_description.table_name, fun id/2},
       {<<"TableSizeBytes">>, #ddb2_table_description.table_size_bytes, fun id/2},
       {<<"TableStatus">>, #ddb2_table_description.table_status, fun undynamize_table_status/2}
@@ -1064,7 +1139,7 @@ batch_get_item(RequestItems, Opts) ->
 %%------------------------------------------------------------------------------
 %% @doc 
 %% DynamoDB API:
-%% [http://docs.aws.amazon.com/amazondynamodb/latest/developerguide/API_BatchGetItems.html]
+%% [http://docs.aws.amazon.com/amazondynamodb/latest/APIReference/API_BatchGetItem.html]
 %%
 %% ===Example===
 %%
@@ -1191,7 +1266,7 @@ batch_write_item(RequestItems, Opts) ->
 %%------------------------------------------------------------------------------
 %% @doc 
 %% DynamoDB API:
-%% [http://docs.aws.amazon.com/amazondynamodb/latest/developerguide/API_BatchWriteItem.html]
+%% [http://docs.aws.amazon.com/amazondynamodb/latest/APIReference/API_BatchWriteItem.html]
 %%
 %% ===Example===
 %%
@@ -1259,7 +1334,8 @@ dynamize_global_secondary_indexes(Value) ->
     dynamize_maybe_list(fun dynamize_global_secondary_index/1, Value).
 
 -type create_table_opt() :: {local_secondary_indexes, local_secondary_indexes()} |
-                            {global_secondary_indexes, global_secondary_indexes()}.
+                            {global_secondary_indexes, global_secondary_indexes()} |
+                            {stream_specification, stream_specification()}.
 -type create_table_opts() :: [create_table_opt()].
 
 -spec create_table_opts(key_schema()) -> opt_table().
@@ -1267,7 +1343,8 @@ create_table_opts(KeySchema) ->
     [{local_secondary_indexes, <<"LocalSecondaryIndexes">>, 
       fun(V) -> dynamize_local_secondary_indexes(KeySchema, V) end},
      {global_secondary_indexes, <<"GlobalSecondaryIndexes">>,
-      fun(V) -> dynamize_global_secondary_indexes(V) end}].
+      fun dynamize_global_secondary_indexes/1},
+     {stream_specification, <<"StreamSpecification">>, fun dynamize_stream_specification/1}].
 
 -spec create_table_record() -> record_desc().
 create_table_record() ->
@@ -1278,12 +1355,12 @@ create_table_record() ->
 
 -type create_table_return() :: ddb_return(#ddb2_create_table{}, #ddb2_table_description{}).
 
--spec create_table(table_name(), attr_defs(), key_schema(), non_neg_integer(), non_neg_integer()) 
+-spec create_table(table_name(), attr_defs(), key_schema(), read_units(), write_units())
                   -> create_table_return().
 create_table(Table, AttrDefs, KeySchema, ReadUnits, WriteUnits) ->
     create_table(Table, AttrDefs, KeySchema, ReadUnits, WriteUnits, [], default_config()).
 
--spec create_table(table_name(), attr_defs(), key_schema(), non_neg_integer(), non_neg_integer(), 
+-spec create_table(table_name(), attr_defs(), key_schema(), read_units(), write_units(),
                    create_table_opts())
                   -> create_table_return().
 create_table(Table, AttrDefs, KeySchema, ReadUnits, WriteUnits, Opts) ->
@@ -1292,7 +1369,7 @@ create_table(Table, AttrDefs, KeySchema, ReadUnits, WriteUnits, Opts) ->
 %%------------------------------------------------------------------------------
 %% @doc 
 %% DynamoDB API:
-%% [http://docs.aws.amazon.com/amazondynamodb/latest/developerguide/API_CreateTable.html]
+%% [http://docs.aws.amazon.com/amazondynamodb/latest/APIReference/API_CreateTable.html]
 %%
 %% ===Example===
 %%
@@ -1320,7 +1397,7 @@ create_table(Table, AttrDefs, KeySchema, ReadUnits, WriteUnits, Opts) ->
 %% '
 %% @end
 %%------------------------------------------------------------------------------
--spec create_table(table_name(), attr_defs(), key_schema(), non_neg_integer(), non_neg_integer(), 
+-spec create_table(table_name(), attr_defs(), key_schema(), read_units(), write_units(),
                    create_table_opts(), aws_config()) 
                   -> create_table_return().
 create_table(Table, AttrDefs, KeySchema, ReadUnits, WriteUnits, Opts, Config) ->
@@ -1331,8 +1408,7 @@ create_table(Table, AttrDefs, KeySchema, ReadUnits, WriteUnits, Opts, Config) ->
                [{<<"TableName">>, Table},
                 {<<"AttributeDefinitions">>, dynamize_attr_defs(AttrDefs)}, 
                 {<<"KeySchema">>, dynamize_key_schema(KeySchema)},
-                {<<"ProvisionedThroughput">>, [{<<"ReadCapacityUnits">>, ReadUnits},
-                                               {<<"WriteCapacityUnits">>, WriteUnits}]}]
+                {<<"ProvisionedThroughput">>, dynamize_provisioned_throughput({ReadUnits, WriteUnits})}]
                ++ AwsOpts),
     out(Return, fun(Json, UOpts) -> undynamize_record(create_table_record(), Json, UOpts) end, 
         DdbOpts, #ddb2_create_table.table_description).
@@ -1385,7 +1461,7 @@ delete_item(Table, Key, Opts) ->
 %%------------------------------------------------------------------------------
 %% @doc 
 %% DynamoDB API:
-%% [http://docs.aws.amazon.com/amazondynamodb/latest/developerguide/API_DeleteItem.html]
+%% [http://docs.aws.amazon.com/amazondynamodb/latest/APIReference/API_DeleteItem.html]
 %%
 %% ===Example===
 %%
@@ -1439,7 +1515,7 @@ delete_table(Table, Opts) ->
 %%------------------------------------------------------------------------------
 %% @doc 
 %% DynamoDB API:
-%% [http://docs.aws.amazon.com/amazondynamodb/latest/developerguide/API_DeleteTable.html]
+%% [http://docs.aws.amazon.com/amazondynamodb/latest/APIReference/API_DeleteTable.html]
 %%
 %% ===Example===
 %%
@@ -1460,6 +1536,58 @@ delete_table(Table, Opts, Config) ->
                [{<<"TableName">>, Table}]),
     out(Return, fun(Json, UOpts) -> undynamize_record(delete_table_record(), Json, UOpts) end, 
         DdbOpts, #ddb2_delete_table.table_description).
+
+%%%------------------------------------------------------------------------------
+%%% DescribeLimits
+%%%------------------------------------------------------------------------------
+
+-spec describe_limits_record() -> record_desc().
+describe_limits_record() ->
+    {#ddb2_describe_limits{},
+     [{<<"AccountMaxReadCapacityUnits">>, #ddb2_describe_limits.account_max_read_capacity_units, fun id/2},
+      {<<"AccountMaxWriteCapacityUnits">>, #ddb2_describe_limits.account_max_write_capacity_units, fun id/2},
+      {<<"TableMaxReadCapacityUnits">>, #ddb2_describe_limits.table_max_read_capacity_units, fun id/2},
+      {<<"TableMaxWriteCapacityUnits">>, #ddb2_describe_limits.table_max_write_capacity_units, fun id/2}
+     ]}.
+
+-type describe_limits_return() :: ddb_return(#ddb2_describe_limits{}, #ddb2_describe_limits{}).
+
+-spec describe_limits() -> describe_limits_return().
+describe_limits() ->
+    describe_limits([], default_config()).
+
+-spec describe_limits(ddb_opts()) -> describe_limits_return().
+describe_limits(Opts) ->
+    describe_limits(Opts, default_config()).
+
+%%------------------------------------------------------------------------------
+%% @doc
+%% DynamoDB API:
+%% [http://docs.aws.amazon.com/amazondynamodb/latest/APIReference/API_DescribeLimits.html]
+%%
+%% ===Example===
+%%
+%% Describe the current provisioned-capacity limits for your AWS account.
+%%
+%% `
+%% {ok, Limits} =
+%%     erlcloud_ddb2:describe_limits(),
+%% '
+%% @end
+%%------------------------------------------------------------------------------
+-spec describe_limits(ddb_opts(), aws_config()) -> describe_limits_return().
+describe_limits(Opts, Config) ->
+    {[], DdbOpts} = opts([], Opts),
+    Return = erlcloud_ddb_impl:request(
+               Config,
+               "DynamoDB_20120810.DescribeLimits",
+               []),
+    case out(Return, fun(Json, UOpts) -> undynamize_record(describe_limits_record(), Json, UOpts) end,
+             DdbOpts) of
+        {simple, Record} -> {ok, Record};
+        {ok, _} = Out -> Out;
+        {error, _} = Out -> Out
+    end.
 
 %%%------------------------------------------------------------------------------
 %%% DescribeTable
@@ -1485,7 +1613,7 @@ describe_table(Table, Opts) ->
 %%------------------------------------------------------------------------------
 %% @doc 
 %% DynamoDB API:
-%% [http://docs.aws.amazon.com/amazondynamodb/latest/developerguide/API_DescribeTables.html]
+%% [http://docs.aws.amazon.com/amazondynamodb/latest/APIReference/API_DescribeTable.html]
 %%
 %% ===Example===
 %%
@@ -1547,7 +1675,7 @@ get_item(Table, Key, Opts) ->
 %%------------------------------------------------------------------------------
 %% @doc 
 %% DynamoDB API:
-%% [http://docs.aws.amazon.com/amazondynamodb/latest/developerguide/API_GetItem.html]
+%% [http://docs.aws.amazon.com/amazondynamodb/latest/APIReference/API_GetItem.html]
 %%
 %% ===Example===
 %%
@@ -1611,7 +1739,7 @@ list_tables(Opts) ->
 %%------------------------------------------------------------------------------
 %% @doc 
 %% DynamoDB API:
-%% [http://docs.aws.amazon.com/amazondynamodb/latest/developerguide/API_ListTables.html]
+%% [http://docs.aws.amazon.com/amazondynamodb/latest/APIReference/API_ListTables.html]
 %%
 %% ===Example===
 %%
@@ -1683,7 +1811,7 @@ put_item(Table, Item, Opts) ->
 %%------------------------------------------------------------------------------
 %% @doc 
 %% DynamoDB API:
-%% [http://docs.aws.amazon.com/amazondynamodb/latest/developerguide/API_PutItem.html]
+%% [http://docs.aws.amazon.com/amazondynamodb/latest/APIReference/API_PutItem.html]
 %%
 %% ===Example===
 %%
@@ -1787,7 +1915,7 @@ q(Table, KeyConditionsOrExpression, Opts) ->
 %%------------------------------------------------------------------------------
 %% @doc 
 %% DynamoDB API:
-%% [http://docs.aws.amazon.com/amazondynamodb/latest/developerguide/API_Query.html]
+%% [http://docs.aws.amazon.com/amazondynamodb/latest/APIReference/API_Query.html]
 %%
 %% KeyConditions are treated as a required parameter, which appears to
 %% be the case despite what the documentation says.
@@ -1834,6 +1962,7 @@ q(Table, KeyConditionsOrExpression, Opts, Config) ->
                     expression_attribute_values_opt() |
                     projection_expression_opt() |
                     attributes_to_get_opt() |
+                    consistent_read_opt() |
                     {filter_expression, expression()} |
                     conditional_op_opt() |
                     {scan_filter, conditions()} |
@@ -1853,6 +1982,7 @@ scan_opts() ->
      expression_attribute_values_opt(),
      projection_expression_opt(),
      attributes_to_get_opt(),
+     consistent_read_opt(),
      {filter_expression, <<"FilterExpression">>, fun dynamize_expression/1},
      conditional_op_opt(),
      {scan_filter, <<"ScanFilter">>, fun dynamize_conditions/1},
@@ -1888,7 +2018,7 @@ scan(Table, Opts) ->
 %%------------------------------------------------------------------------------
 %% @doc 
 %% DynamoDB API:
-%% [http://docs.aws.amazon.com/amazondynamodb/latest/developerguide/API_Scan.html]
+%% [http://docs.aws.amazon.com/amazondynamodb/latest/APIReference/API_Scan.html]
 %%
 %% ===Example===
 %%
@@ -1997,7 +2127,7 @@ update_item(Table, Key, UpdatesOrExpression, Opts) ->
 %%------------------------------------------------------------------------------
 %% @doc 
 %% DynamoDB API:
-%% [http://docs.aws.amazon.com/amazondynamodb/latest/developerguide/API_UpdateItem.html]
+%% [http://docs.aws.amazon.com/amazondynamodb/latest/APIReference/API_UpdateItem.html]
 %%
 %% AttributeUpdates is treated as a required parameter because callers
 %% will almost always provide it. If no updates are desired, You can
@@ -2023,7 +2153,8 @@ update_item(Table, Key, UpdatesOrExpression, Opts) ->
 %% '
 %% @end
 %%------------------------------------------------------------------------------
--spec update_item(table_name(), key(), in_updates() | expression(), update_item_opts(), aws_config()) -> update_item_return().
+-spec update_item(table_name(), key(), in_updates() | expression(), update_item_opts(), aws_config())
+                 -> update_item_return().
 update_item(Table, Key, UpdatesOrExpression, Opts, Config) ->
     {AwsOpts, DdbOpts} = opts(update_item_opts(), Opts),
     Return = erlcloud_ddb_impl:request(
@@ -2042,7 +2173,7 @@ update_item(Table, Key, UpdatesOrExpression, Opts, Config) ->
 
 -type update_table_return() :: ddb_return(#ddb2_update_table{}, #ddb2_table_description{}).
 
--type global_secondary_index_update() :: {index_name(), pos_integer(), pos_integer()} |
+-type global_secondary_index_update() :: {index_name(), read_units(), write_units()} |
                                          {index_name(), delete} |
                                          global_secondary_index_def().
 -type global_secondary_index_updates() :: maybe_list(global_secondary_index_update()).
@@ -2051,10 +2182,7 @@ update_item(Table, Key, UpdatesOrExpression, Opts, Config) ->
 dynamize_global_secondary_index_update({IndexName, ReadUnits, WriteUnits}) ->
     [{<<"Update">>, [
         {<<"IndexName">>, IndexName},
-        {<<"ProvisionedThroughput">>, [
-            {<<"ReadCapacityUnits">>, ReadUnits},
-            {<<"WriteCapacityUnits">>, WriteUnits}
-        ]}
+        {<<"ProvisionedThroughput">>, dynamize_provisioned_throughput({ReadUnits, WriteUnits})}
     ]}];
 dynamize_global_secondary_index_update({IndexName, delete}) ->
     [{<<"Delete">>, [
@@ -2067,16 +2195,20 @@ dynamize_global_secondary_index_update(Index) ->
 dynamize_global_secondary_index_updates(Updates) ->
     dynamize_maybe_list(fun dynamize_global_secondary_index_update/1, Updates).
 
--type update_table_opt() :: {attribute_definitions, attr_defs()} |
+-type update_table_opt() :: {provisioned_throughput, {read_units(), write_units()}} |
+                            {attribute_definitions, attr_defs()} |
                             {global_secondary_index_updates, global_secondary_index_updates()} |
+                            {stream_specification, stream_specification()} |
                             out_opt().
 -type update_table_opts() :: [update_table_opt()].
 
 -spec update_table_opts() -> opt_table().
 update_table_opts() ->
-    [{attribute_definitions, <<"AttributeDefinitions">>, fun dynamize_attr_defs/1},
+    [{provisioned_throughput, <<"ProvisionedThroughput">>, fun dynamize_provisioned_throughput/1},
+     {attribute_definitions, <<"AttributeDefinitions">>, fun dynamize_attr_defs/1},
      {global_secondary_index_updates, <<"GlobalSecondaryIndexUpdates">>,
-      fun dynamize_global_secondary_index_updates/1}].
+      fun dynamize_global_secondary_index_updates/1},
+     {stream_specification, <<"StreamSpecification">>, fun dynamize_stream_specification/1}].
 
 -spec update_table_record() -> record_desc().
 update_table_record() ->
@@ -2085,40 +2217,46 @@ update_table_record() ->
        fun(V, Opts) -> undynamize_record(table_description_record(), V, Opts) end}
      ]}. 
 
--spec update_table(table_name(), non_neg_integer(), non_neg_integer()) -> update_table_return().
-update_table(Table, ReadUnits, WriteUnits) ->
-    update_table(Table, ReadUnits, WriteUnits, [], default_config()).
-
--spec update_table(table_name(), non_neg_integer(), non_neg_integer(), update_table_opts()) 
-                  -> update_table_return().
-update_table(Table, ReadUnits, WriteUnits, Opts) ->
-    update_table(Table, ReadUnits, WriteUnits, Opts, default_config()).
+-spec update_table(table_name(), update_table_opts()) -> update_table_return().
+update_table(Table, Opts) ->
+    update_table(Table, Opts, default_config()).
 
 %%------------------------------------------------------------------------------
 %% @doc 
 %% DynamoDB API:
-%% [http://docs.aws.amazon.com/amazondynamodb/latest/developerguide/API_UpdateTable.html]
+%% [http://docs.aws.amazon.com/amazondynamodb/latest/APIReference/API_UpdateTable.html]
 %%
 %% ===Example===
 %%
 %% Update table "Thread" to have 10 units of read and write capacity.
 %% Update secondary index <<"SubjectIdx">> to have 10 units of read write capacity 
 %% `
-%% erlcloud_ddb2:update_table(<<"Thread">>, 10, 10, [{global_secondary_index_updates, [{<<"SubjectIdx">>, 10, 10}]}])
+%% erlcloud_ddb2:update_table(
+%%   <<"Thread">>,
+%%   [{provisioned_throughput, {10, 10}},
+%%    {global_secondary_index_updates, [{<<"SubjectIdx">>, 10, 10}]}])
 %% '
 %% @end
 %%------------------------------------------------------------------------------
--spec update_table(table_name(), non_neg_integer(), non_neg_integer(), update_table_opts(), 
-                   aws_config()) 
-                  -> update_table_return().
-update_table(Table, ReadUnits, WriteUnits, Opts, Config) ->
+-spec update_table(table_name(), update_table_opts(), aws_config()) -> update_table_return();
+                  (table_name(), read_units(), write_units()) -> update_table_return().
+update_table(Table, Opts, Config) when is_list(Opts) ->
     {AwsOpts, DdbOpts} = opts(update_table_opts(), Opts),
     Return = erlcloud_ddb_impl:request(
                Config,
                "DynamoDB_20120810.UpdateTable",
-               [{<<"TableName">>, Table},
-                {<<"ProvisionedThroughput">>, [{<<"ReadCapacityUnits">>, ReadUnits},
-                                               {<<"WriteCapacityUnits">>, WriteUnits}]}]
+               [{<<"TableName">>, Table}]
                 ++ AwsOpts),
     out(Return, fun(Json, UOpts) -> undynamize_record(update_table_record(), Json, UOpts) end, 
-        DdbOpts, #ddb2_update_table.table_description).
+        DdbOpts, #ddb2_update_table.table_description);
+update_table(Table, ReadUnits, WriteUnits) ->
+    update_table(Table, ReadUnits, WriteUnits, [], default_config()).
+
+-spec update_table(table_name(), read_units(), write_units(), update_table_opts()) -> update_table_return().
+update_table(Table, ReadUnits, WriteUnits, Opts) ->
+    update_table(Table, ReadUnits, WriteUnits, Opts, default_config()).
+
+-spec update_table(table_name(), read_units(), write_units(), update_table_opts(), aws_config())
+                  -> update_table_return().
+update_table(Table, ReadUnits, WriteUnits, Opts, Config) ->
+    update_table(Table, [{provisioned_throughput, {ReadUnits, WriteUnits}} | Opts], Config).

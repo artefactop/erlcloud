@@ -1,8 +1,9 @@
 %% Amazon Simple Storage Service (S3)
 
 -module(erlcloud_s3).
--export([new/2, new/3, new/4, configure/2, configure/3, configure/4,
-         create_bucket/1, create_bucket/2, create_bucket/3,
+-export([new/2, new/3, new/4, new/5,
+         configure/2, configure/3, configure/4, configure/5,
+         create_bucket/1, create_bucket/2, create_bucket/3, create_bucket/4,
          delete_bucket/1, delete_bucket/2,
          get_bucket_attribute/2, get_bucket_attribute/3,
          list_buckets/0, list_buckets/1,
@@ -12,7 +13,8 @@
          list_objects/1, list_objects/2, list_objects/3,
          list_object_versions/1, list_object_versions/2, list_object_versions/3,
          copy_object/4, copy_object/5, copy_object/6,
-         delete_objects_batch/2, explore_dirstructure/3,
+         delete_objects_batch/2, delete_objects_batch/3,
+         explore_dirstructure/3,
          delete_object/2, delete_object/3,
          delete_object_version/3, delete_object_version/4,
          get_object/2, get_object/3, get_object/4,
@@ -67,6 +69,17 @@ new(AccessKeyID, SecretAccessKey, Host, Port) ->
        s3_port=Port
       }.
 
+-spec new(string(), string(), string(), non_neg_integer(), string()) -> aws_config().
+
+new(AccessKeyID, SecretAccessKey, Host, Port, Scheme) ->
+    #aws_config{
+       access_key_id=AccessKeyID,
+       secret_access_key=SecretAccessKey,
+       s3_host=Host,
+       s3_port=Port,
+       s3_scheme=Scheme
+      }.
+
 -spec configure(string(), string()) -> ok.
 
 configure(AccessKeyID, SecretAccessKey) ->
@@ -83,6 +96,12 @@ configure(AccessKeyID, SecretAccessKey, Host) ->
 
 configure(AccessKeyID, SecretAccessKey, Host, Port) ->
     put(aws_config, new(AccessKeyID, SecretAccessKey, Host, Port)),
+    ok.
+
+-spec configure(string(), string(), string(), non_neg_integer(), string()) -> ok.
+
+configure(AccessKeyID, SecretAccessKey, Host, Port, Scheme) ->
+    put(aws_config, new(AccessKeyID, SecretAccessKey, Host, Port, Scheme)),
     ok.
 
 -type s3_bucket_attribute_name() :: acl
@@ -173,7 +192,7 @@ create_bucket(BucketName, ACL, LocationConstraint, Config)
                    none -> <<>>;
                    Location when Location =:= eu; Location =:= us_west_1 ->
                        LocationName = case Location of eu -> "EU"; us_west_1 -> "us-west-1" end,
-                       XML = {'CreateBucketConfiguration', [{xmlns, ?XMLNS_S3}],
+                       XML = {'CreateBucketConfiguration', [{'xmlns:xsi', ?XMLNS_S3}],
                               [{'LocationConstraint', [LocationName]}]},
                        list_to_binary(xmerl:export_simple([XML], xmerl_xml))
                end,
@@ -198,10 +217,13 @@ delete_bucket(BucketName, Config)
   when is_list(BucketName) ->
     s3_simple_request(Config, delete, BucketName, "/", "", [], <<>>, []).
 
--spec delete_objects_batch(string(), list()) -> no_return().
 
+-spec delete_objects_batch(string(), list()) -> no_return().
 delete_objects_batch(Bucket, KeyList) ->
-    Config = default_config(),
+    delete_objects_batch(Bucket, KeyList, default_config()).
+
+-spec delete_objects_batch(string(), list(), aws_config()) -> no_return().
+delete_objects_batch(Bucket, KeyList, Config) ->
     Data = lists:map(fun(Item) ->
             lists:concat(["<Object><Key>", Item, "</Key></Object>"]) end, 
                 KeyList),
@@ -209,9 +231,6 @@ delete_objects_batch(Bucket, KeyList) ->
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?><Delete>" ++ Data ++ "</Delete>", 
                 utf8),
 
-    
-    
-    
     Len = integer_to_list(string:len(Payload)),
     Url = lists:flatten([Config#aws_config.s3_scheme, 
                 Bucket, ".", Config#aws_config.s3_host, port_spec(Config), "/?delete"]),
@@ -221,8 +240,13 @@ delete_objects_batch(Bucket, KeyList) ->
                {"content-md5", binary_to_list(ContentMD5)},
                {"content-length", Len}],
     Result = erlcloud_httpc:request(
-        Url, "POST", Headers, Payload, 1000, Config),
+        Url, "POST", Headers, Payload, delete_objects_batch_timeout(Config), Config),
     erlcloud_aws:http_headers_body(Result).
+
+delete_objects_batch_timeout(#aws_config{timeout = undefined}) ->
+    1000;
+delete_objects_batch_timeout(#aws_config{timeout = Timeout}) ->
+    Timeout.
 
 % returns paths list from AWS S3 root directory, used as input to delete_objects_batch
 % example : 
@@ -390,8 +414,10 @@ extract_contents(Nodes) ->
 extract_user([]) ->
     [];
 extract_user([Node]) ->
-    Attributes = [{id, "ID", text},
-                  {display_name, "DisplayName", optional_text}],
+    Attributes = [{id, "ID", optional_text},
+                  {display_name, "DisplayName", optional_text},
+                  {uri, "URI", optional_text}
+                 ],
     erlcloud_xml:decode(Attributes, Node).
 
 -spec get_bucket_attribute(string(), s3_bucket_attribute_name()) -> term().
@@ -417,7 +443,14 @@ get_bucket_attribute(BucketName, AttributeName, Config)
                           {access_control_list, "AccessControlList/Grant", fun extract_acl/1}],
             erlcloud_xml:decode(Attributes, Doc);
         location ->
-            erlcloud_xml:get_text("/LocationConstraint", Doc);
+            case erlcloud_xml:get_text("/LocationConstraint", Doc) of
+                %% logic according to http://s3tools.org/s3cmd
+                %% s3cmd-1.5.2/S3/S3.py : line 342 (function get_bucket_location)
+                [] -> "us-east-1";
+                ["US"] -> "us-east-1";
+                ["EU"] -> "eu-west-1";
+                Loc -> Loc
+            end;
         logging ->
             case xmerl_xpath:string("/BucketLoggingStatus/LoggingEnabled", Doc) of
                 [] ->
@@ -639,12 +672,12 @@ extract_bucket(Node) ->
                          {creation_date, "CreationDate", time}],
                         Node).
 
--spec put_object(string(), string(), iolist()) -> proplist().
+-spec put_object(string(), string(), iodata()) -> proplist().
 
 put_object(BucketName, Key, Value) ->
     put_object(BucketName, Key, Value, []).
 
--spec put_object(string(), string(), iolist(), proplist() | aws_config()) -> proplist().
+-spec put_object(string(), string(), iodata(), proplist() | aws_config()) -> proplist().
 
 put_object(BucketName, Key, Value, Config)
   when is_record(Config, aws_config) ->
@@ -653,7 +686,7 @@ put_object(BucketName, Key, Value, Config)
 put_object(BucketName, Key, Value, Options) ->
     put_object(BucketName, Key, Value, Options, default_config()).
 
--spec put_object(string(), string(), iolist(), proplist(), [{string(), string()}] | aws_config()) -> proplist().
+-spec put_object(string(), string(), iodata(), proplist(), [{string(), string()}] | aws_config()) -> proplist().
 
 put_object(BucketName, Key, Value, Options, Config)
   when is_record(Config, aws_config) ->
@@ -662,7 +695,7 @@ put_object(BucketName, Key, Value, Options, Config)
 put_object(BucketName, Key, Value, Options, HTTPHeaders) ->
     put_object(BucketName, Key, Value, Options, HTTPHeaders, default_config()).
 
--spec put_object(string(), string(), iolist(), proplist(), [{string(), string()}], aws_config()) -> proplist().
+-spec put_object(string(), string(), iodata(), proplist(), [{string(), string()}], aws_config()) -> proplist().
 
 put_object(BucketName, Key, Value, Options, HTTPHeaders, Config)
   when is_list(BucketName), is_list(Key), is_list(Value) orelse is_binary(Value),
@@ -691,7 +724,7 @@ set_object_acl(BucketName, Key, ACL, Config)
            [{'Owner', [{'ID', [Id]}, {'DisplayName', [DisplayName]}]},
             {'AccessControlList', encode_grants(ACL1)}]},
     XMLText = list_to_binary(xmerl:export_simple([XML], xmerl_xml)),
-    s3_simple_request(Config, put, BucketName, [$/|Key], "acl", [], XMLText, []).
+    s3_simple_request(Config, put, BucketName, [$/|Key], "acl", [], XMLText, [{"content-type", "application/xml"}]).
 
 -spec sign_get(integer(), string(), string(), aws_config()) -> {binary(), string()}.
 sign_get(Expire_time, BucketName, Key, Config)
@@ -735,7 +768,10 @@ make_link(Expire_time, BucketName, Key, Config) ->
 -spec get_object_url(string(), string(), aws_config()) -> string().
 
  get_object_url(BucketName, Key, Config) ->
-  lists:flatten([Config#aws_config.s3_scheme, BucketName, ".", Config#aws_config.s3_host, port_spec(Config), "/", Key]).
+  case Config#aws_config.s3_bucket_after_host of
+      false -> lists:flatten([Config#aws_config.s3_scheme, BucketName, ".", Config#aws_config.s3_host, port_spec(Config), "/", Key]);
+      true  -> lists:flatten([Config#aws_config.s3_scheme, Config#aws_config.s3_host, port_spec(Config), "/", BucketName, "/", Key])
+  end.
 
 -spec make_get_url(integer(), string(), string()) -> iolist().
 
@@ -750,7 +786,7 @@ make_get_url(Expire_time, BucketName, Key, Config) ->
         undefined -> "";
         SecurityToken -> "&x-amz-security-token=" ++ erlcloud_http:url_encode(SecurityToken)
     end,
-    lists:flatten([Config#aws_config.s3_scheme, BucketName, ".", Config#aws_config.s3_host, port_spec(Config), "/", Key,
+    lists:flatten([get_object_url(BucketName, Key, Config),
      "?AWSAccessKeyId=", erlcloud_http:url_encode(Config#aws_config.access_key_id),
      "&Signature=", erlcloud_http:url_encode(Sig),
      "&Expires=", Expires,
@@ -779,11 +815,11 @@ start_multipart(BucketName, Key, Options, HTTPHeaders, Config)
             Error
     end.
 
--spec upload_part(string(), string(), string(), integer(), iolist()) -> {ok, proplist()} | {error, any()}.
+-spec upload_part(string(), string(), string(), integer(), iodata()) -> {ok, proplist()} | {error, any()}.
 upload_part(BucketName, Key, UploadId, PartNumber, Value) ->
     upload_part(BucketName, Key, UploadId, PartNumber, Value, [], default_config()).
 
--spec upload_part(string(), string(), string(), integer(), iolist(), [{string(), string()}], aws_config()) -> {ok, proplist()} | {error, any()}.
+-spec upload_part(string(), string(), string(), integer(), iodata(), [{string(), string()}], aws_config()) -> {ok, proplist()} | {error, any()}.
 upload_part(BucketName, Key, UploadId, PartNumber, Value, HTTPHeaders, Config)
   when is_list(BucketName), is_list(Key), is_list(UploadId), is_integer(PartNumber),
        is_list(Value) orelse is_binary(Value),
@@ -898,7 +934,7 @@ set_bucket_attribute(BucketName, AttributeName, Value, Config)
                 {"acl", ACLXML};
             logging ->
                 LoggingXML = {'BucketLoggingStatus',
-                              [{xmlns, ?XMLNS_S3}],
+                              [{'xmlns:xsi', ?XMLNS_S3}],
                               case proplists:get_bool(enabled, Value) of
                                   true ->
                                       [{'LoggingEnabled',
@@ -917,7 +953,7 @@ set_bucket_attribute(BucketName, AttributeName, Value, Config)
                                 requester -> "Requester";
                                 bucket_owner -> "BucketOwner"
                             end,
-                RPXML = {'RequestPaymentConfiguration', [{xmlns, ?XMLNS_S3}],
+                RPXML = {'RequestPaymentConfiguration', [{'xmlns:xsi', ?XMLNS_S3}],
                          [
                           {'Payer', [PayerName]}
                          ]
@@ -932,7 +968,7 @@ set_bucket_attribute(BucketName, AttributeName, Value, Config)
                                 enabled -> "Enabled";
                                 disabled -> "Disabled"
                             end,
-                VersioningXML = {'VersioningConfiguration', [{xmlns, ?XMLNS_S3}],
+                VersioningXML = {'VersioningConfiguration', [{'xmlns:xsi', ?XMLNS_S3}],
                                  [{'Status', [Status]},
                                   {'MfaDelete', [MFADelete]}]},
                 {"versioning", VersioningXML}
@@ -974,10 +1010,19 @@ encode_grants(Grants) ->
 encode_grant(Grant) ->
     Grantee = proplists:get_value(grantee, Grant),
     {'Grant',
-     [{'Grantee', [{xmlns, ?XMLNS_S3}],
-       [{'ID', [proplists:get_value(id, proplists:get_value(owner, Grantee))]},
-        {'DisplayName', [proplists:get_value(display_name, proplists:get_value(owner, Grantee))]}]},
+     [encode_grantee(Grantee),
       {'Permission', [encode_permission(proplists:get_value(permission, Grant))]}]}.
+
+encode_grantee(Grantee) ->
+  case proplists:get_value(id, Grantee) of
+    undefined ->
+      {'Grantee', [{'xmlns:xsi', ?XMLNS_S3}, {'xsi:type', "Group"}],
+      [{'URI', [proplists:get_value(uri, Grantee)]}]};
+    Id ->
+      {'Grantee', [{'xmlns:xsi', ?XMLNS_S3}, {'xsi:type', "CanonicalUser"}],
+      [{'ID', [Id]},
+       {'DisplayName', [proplists:get_value(display_name, Grantee)]}]}
+  end.
 
 s3_simple_request(Config, Method, Host, Path, Subresource, Params, POSTData, Headers) ->
     case s3_request(Config, Method, Host, Path, Subresource, Params, POSTData, Headers) of
@@ -1063,11 +1108,12 @@ s3_request2_no_update(Config, Method, Host, Path, Subresource, Params, Body, Hea
             "" -> [];
             _ -> [{"content-md5", binary_to_list(ContentMD5)}]
         end,
-    RequestURI = lists:flatten([
-                                Config#aws_config.s3_scheme,
-                                case Host of "" -> ""; _ -> [Host, $.] end,
-                                Config#aws_config.s3_host, port_spec(Config),
-                                EscapedPath,
+    HostURI = case Config#aws_config.s3_bucket_after_host of
+                  false -> [case Host of "" -> ""; _ -> [Host, $.] end, Config#aws_config.s3_host, port_spec(Config)];
+                  true  -> [Config#aws_config.s3_host, port_spec(Config), case Host of "" -> ""; _ -> [$/, Host] end]
+              end,
+    RequestURI = lists:flatten([Config#aws_config.s3_scheme,
+                                HostURI, EscapedPath,
                                 case Subresource of "" -> ""; _ -> [$?, Subresource] end,
                                 if
                                     Params =:= [] -> "";

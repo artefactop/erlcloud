@@ -163,7 +163,7 @@ request_impl(Method, _Protocol, _Host, _Port, _Path, Operation, Params, Body, #a
                 erlcloud_httpc:request(
                      url(Config), Method, 
                      [{<<"content-type">>, <<"application/x-amz-json-1.1">>} | Headers],
-                     Body, 1000, Config)) of
+                     Body, timeout(Config), Config)) of
        {ok, {_RespHeader, RespBody}} ->
             case Config#aws_config.cloudtrail_raw_result of
                 true -> {ok, RespBody};
@@ -179,15 +179,7 @@ headers(Config, Operation, _Params, Body, Service) ->
                {"host", Config#aws_config.cloudtrail_host},
                {"x-amz-target", Operation}
                ],
-    Region =
-        case string:tokens(Config#aws_config.cloudtrail_host, ".") of
-            [_, Value, _, _] ->
-                Value;
-            _ ->
-                "us-east-1"
-        end,
-    
-    erlcloud_aws:sign_v4(Config, Headers, Body, Region, Service).
+    erlcloud_aws:sign_v4_headers(Config, Headers, Body, erlcloud_aws:aws_region_from_host(Config#aws_config.cloudtrail_host), Service).
 
 
 default_config() -> erlcloud_aws:default_config().
@@ -201,3 +193,7 @@ port_spec(#aws_config{cloudtrail_port=Port}) ->
     [":", erlang:integer_to_list(Port)].
 
 
+timeout(#aws_config{timeout = undefined}) ->
+    1000;
+timeout(#aws_config{timeout = Timeout}) ->
+    Timeout.

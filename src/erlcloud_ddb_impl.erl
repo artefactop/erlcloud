@@ -110,14 +110,16 @@ backoff(Attempt) ->
     timer:sleep(random:uniform((1 bsl (Attempt - 1)) * 100)).
 
 %% HTTPC timeout for a request
-timeout(1, _) ->
+timeout(1, #aws_config{timeout = undefined}) ->
     %% Shorter timeout on first request. This is to avoid long (5s) failover when first DDB
     %% endpoint doesn't respond
     1000;
-timeout(_, Config) ->
+timeout(_, #aws_config{timeout = undefined}) ->
     %% Longer timeout on subsequent requsets - results in less timeouts when system is
     %% under heavy load
-    Config#aws_config.timeout.
+    ?DEFAULT_TIMEOUT;
+timeout(_, #aws_config{timeout = Timeout}) ->
+    Timeout.
 
 -type attempt() :: {attempt, pos_integer()} | {error, term()}.
 
@@ -256,14 +258,8 @@ client_error(Body, DDBError) ->
 headers(Config, Operation, Body) ->
     Headers = [{"host", Config#aws_config.ddb_host},
                {"x-amz-target", Operation}],
-    Region =
-        case string:tokens(Config#aws_config.ddb_host, ".") of
-            [_, Value, _, _] ->
-                Value;
-            _ ->
-                "us-east-1"
-        end,
-    erlcloud_aws:sign_v4(Config, Headers, Body, Region, "dynamodb").
+
+    erlcloud_aws:sign_v4_headers(Config, Headers, Body, erlcloud_aws:aws_region_from_host(Config#aws_config.ddb_host), "dynamodb").
 
 url(#aws_config{ddb_scheme = Scheme, ddb_host = Host} = Config) ->
     lists:flatten([Scheme, Host, port_spec(Config)]).

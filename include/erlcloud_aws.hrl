@@ -6,8 +6,10 @@
           s3_scheme="https://"::string(),
           s3_host="s3.amazonaws.com"::string(),
           s3_port=80::non_neg_integer(),
+          s3_bucket_after_host=false::boolean(),
           sdb_host="sdb.amazonaws.com"::string(),
           elb_host="elasticloadbalancing.amazonaws.com"::string(),
+          rds_host="rds.us-east-1.amazonaws.com"::string(),
           ses_host="email.us-east-1.amazonaws.com"::string(),
           sqs_host="queue.amazonaws.com"::string(),
           sqs_protocol=undefined::string()|undefined,
@@ -22,6 +24,9 @@
           ddb_host="dynamodb.us-east-1.amazonaws.com"::string(),
           ddb_port=80::non_neg_integer(),
           ddb_retry=fun erlcloud_ddb_impl:retry/1::erlcloud_ddb_impl:retry_fun(),
+          ddb_streams_scheme="https://"::string(),
+          ddb_streams_host="streams.dynamodb.us-east-1.amazonaws.com"::string(),
+          ddb_streams_port=80::non_neg_integer(),
           kinesis_scheme="https://"::string(),
           kinesis_host="kinesis.us-east-1.amazonaws.com"::string(),
           kinesis_port=80::non_neg_integer(),
@@ -29,13 +34,18 @@
           cloudtrail_scheme="https://"::string(),
           cloudtrail_host="cloudtrail.amazonaws.com"::string(),
           cloudtrail_port=80::non_neg_integer(),
+          cloudformation_host="cloudformation.us-east-1.amazonaws.com"::string(),
           access_key_id::string()|undefined|false,
           secret_access_key::string()|undefined|false,
           security_token=undefined::string()|undefined,
-          timeout=10000::timeout(),
+          %% Network request timeout; if not specifed, the default timeout will be used:
+          %% ddb: 1s for initial call, 10s for subsequence;
+          %% s3:delete_objects_batch/{2,3}, cloudtrail: 1s;
+          %% other services: 10s.
+          timeout=undefined::timeout()|undefined,
           cloudtrail_raw_result=false::boolean(),
-          http_client=lhttpc::erlcloud_httpc:request_fun(),
-
+          http_client=lhttpc::erlcloud_httpc:request_fun(), %% If using hackney, ensure that it is started.
+          hackney_pool=default::atom(), %% The name of the http request pool hackney should use.
           %% Default to not retry failures (for backwards compatability).
           %% Recommended to be set to default_retry to provide recommended retry behavior.
           %% Currently only affects S3, but intent is to change other services to use this as well.
@@ -44,6 +54,8 @@
           retry=fun erlcloud_retry:no_retry/1::erlcloud_retry:retry_fun()
          }).
 -type(aws_config() :: #aws_config{}).
+
+-define(DEFAULT_TIMEOUT, 10000).
 
 -record(aws_request,
         {
@@ -67,4 +79,3 @@
           %% Service specific error information
           should_retry :: boolean()
         }).
-
